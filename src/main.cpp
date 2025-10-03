@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <poll.h>
 #include <cstring>
 #include <cerrno>
 
@@ -74,6 +75,20 @@ int main()
 
     std::cout << "Server listening on port " << port << std::endl;
     std::cout << "Waiting for connection..." << std::endl;
+
+    // Use poll to wait for incoming connection
+    struct pollfd pollFd;
+    pollFd.fd = serverFd;
+    pollFd.events = POLLIN;
+
+    int pollResult = poll(&pollFd, 1, -1);
+    if (pollResult < 0)
+    {
+        std::cerr << "Error: poll failed: "
+                  << strerror(errno) << std::endl;
+        close(serverFd);
+        return 1;
+    }
 
     // Accept one connection
     clientAddrLen = sizeof(clientAddr);

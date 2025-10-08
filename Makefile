@@ -8,7 +8,11 @@ SRC_DIR     = src
 OBJ_DIR     = obj
 
 SRCS        = $(SRC_DIR)/main.cpp \
-              $(SRC_DIR)/socket_utils.cpp
+              $(SRC_DIR)/socket_utils.cpp \
+              $(SRC_DIR)/http_request.cpp \
+              $(SRC_DIR)/http_response.cpp \
+              $(SRC_DIR)/file_reader.cpp \
+              $(SRC_DIR)/server.cpp
 
 OBJS        = $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 

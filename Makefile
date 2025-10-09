@@ -12,7 +12,11 @@ SRCS        = $(SRC_DIR)/main.cpp \
               $(SRC_DIR)/http_request.cpp \
               $(SRC_DIR)/http_response.cpp \
               $(SRC_DIR)/file_reader.cpp \
-              $(SRC_DIR)/server.cpp
+              $(SRC_DIR)/server.cpp \
+              $(SRC_DIR)/route_config.cpp \
+              $(SRC_DIR)/server_config.cpp \
+              $(SRC_DIR)/config_parser.cpp \
+              $(SRC_DIR)/directory_listing.cpp
 
 OBJS        = $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 

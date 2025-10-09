@@ -3,17 +3,22 @@
 #include <iostream>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <poll.h>
 #include <cstring>
 #include <cerrno>
+#include <sys/stat.h>
+#include <fstream>
 
-Server::Server() : serverFd(-1), port(8080), fileReader("www")
+Server::Server() : serverFd(-1)
 {
+    config.setPort(8080);
+    config.setDefaultRoot("www");
 }
 
-Server::Server(int portNumber) : serverFd(-1), port(portNumber),
-                                  fileReader("www")
+Server::Server(const ServerConfig& configuration)
+    : serverFd(-1), config(configuration)
 {
 }
 
@@ -22,9 +27,9 @@ Server::~Server()
     stop();
 }
 
-void Server::setPort(int portNumber)
+void Server::setConfig(const ServerConfig& configuration)
 {
-    port = portNumber;
+    config = configuration;
 }
 
 bool Server::initSocket()
@@ -65,8 +70,14 @@ bool Server::bindAndListen()
     struct sockaddr_in serverAddr;
     std::memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, config.getHost().c_str(),
+                  &serverAddr.sin_addr) <= 0)
+    {
+        serverAddr.sin_addr.s_addr = INADDR_ANY;
+    }
+
+    serverAddr.sin_port = htons(config.getPort());
 
     if (bind(serverFd, (struct sockaddr*)&serverAddr,
              sizeof(serverAddr)) < 0)
@@ -86,11 +97,124 @@ bool Server::bindAndListen()
     return true;
 }
 
-std::string Server::resolveFilePath(const std::string& requestPath) const
+bool Server::isDirectory(const std::string& path) const
 {
-    if (requestPath == "/")
-        return "/index.html";
-    return requestPath;
+    struct stat fileStat;
+    if (stat(path.c_str(), &fileStat) < 0)
+        return false;
+    return S_ISDIR(fileStat.st_mode);
+}
+
+std::string Server::resolveFilePath(const std::string& requestPath,
+                                     const RouteConfig* route) const
+{
+    std::string root;
+
+    if (route && !route->getRoot().empty())
+        root = route->getRoot();
+    else
+        root = config.getDefaultRoot();
+
+    std::string path = requestPath;
+
+    if (route && !route->getPath().empty() && route->getPath() != "/")
+    {
+        size_t routeLen = route->getPath().length();
+        if (path.compare(0, routeLen, route->getPath()) == 0)
+            path = path.substr(routeLen);
+    }
+
+    if (path.empty() || path == "/")
+        path = "/" + (route ? route->getIndexFile() : "index.html");
+
+    return root + path;
+}
+
+HttpResponse Server::handleGetRequest(const HttpRequest& request,
+                                       const RouteConfig* route)
+{
+    std::string path = request.getPath();
+
+    if (route && !route->getRedirect().empty())
+    {
+        HttpResponse response;
+        response.setStatus(301);
+        response.setHeader("Location", route->getRedirect());
+        response.setBody("");
+        return response;
+    }
+
+    std::string filePath = resolveFilePath(path, route);
+
+    if (isDirectory(filePath))
+    {
+        std::string indexPath = filePath;
+        if (indexPath[indexPath.length() - 1] != '/')
+            indexPath += "/";
+        indexPath += (route ? route->getIndexFile() : "index.html");
+
+        if (fileReader.fileExists(indexPath.substr(
+                config.getDefaultRoot().length())))
+        {
+            filePath = indexPath;
+        }
+        else if (route && route->getAutoindex())
+        {
+            std::string listing = dirListing.generateListing(
+                filePath, path);
+            if (!listing.empty())
+                return HttpResponse::createOkResponse(
+                    listing, "text/html");
+        }
+    }
+
+    fileReader.setRootDirectory(config.getDefaultRoot());
+
+    std::string relativePath = filePath.substr(
+        config.getDefaultRoot().length());
+
+    if (!fileReader.fileExists(relativePath))
+    {
+        std::string errorPage = config.getErrorPage(404);
+        if (!errorPage.empty())
+            errorPage = fileReader.readFile(errorPage);
+        return HttpResponse::createNotFoundResponse(errorPage);
+    }
+
+    std::string content = fileReader.readFile(relativePath);
+    std::string contentType = fileReader.getContentType(relativePath);
+
+    return HttpResponse::createOkResponse(content, contentType);
+}
+
+HttpResponse Server::handlePostRequest(const HttpRequest& request,
+                                        const RouteConfig* route)
+{
+    (void)request;
+    (void)route;
+
+    HttpResponse response;
+    response.setStatus(501);
+    response.setHeader("Content-Type", "text/html");
+    response.setBody("<html><body><h1>501 Not Implemented</h1>"
+                     "<p>POST method not yet implemented</p>"
+                     "</body></html>");
+    return response;
+}
+
+HttpResponse Server::handleDeleteRequest(const HttpRequest& request,
+                                          const RouteConfig* route)
+{
+    (void)request;
+    (void)route;
+
+    HttpResponse response;
+    response.setStatus(501);
+    response.setHeader("Content-Type", "text/html");
+    response.setBody("<html><body><h1>501 Not Implemented</h1>"
+                     "<p>DELETE method not yet implemented</p>"
+                     "</body></html>");
+    return response;
 }
 
 HttpResponse Server::processRequest(const HttpRequest& request)
@@ -98,27 +222,33 @@ HttpResponse Server::processRequest(const HttpRequest& request)
     std::string method = request.getMethod();
     std::string path = request.getPath();
 
-    if (method != "GET")
+    const RouteConfig* route = config.findRoute(path);
+
+    if (route && !route->isMethodAllowed(method))
     {
         HttpResponse response;
-        response.setStatus(400);
-        response.setBody("<html><body><h1>400 Bad Request</h1>"
+        response.setStatus(405);
+        response.setHeader("Content-Type", "text/html");
+        response.setBody("<html><body><h1>405 Method Not Allowed</h1>"
                          "</body></html>");
         return response;
     }
 
-    std::string filePath = resolveFilePath(path);
-
-    if (!fileReader.fileExists(filePath))
+    if (method == "GET")
+        return handleGetRequest(request, route);
+    else if (method == "POST")
+        return handlePostRequest(request, route);
+    else if (method == "DELETE")
+        return handleDeleteRequest(request, route);
+    else
     {
-        std::string errorPage = fileReader.readFile("/errors/404.html");
-        return HttpResponse::createNotFoundResponse(errorPage);
+        HttpResponse response;
+        response.setStatus(400);
+        response.setHeader("Content-Type", "text/html");
+        response.setBody("<html><body><h1>400 Bad Request</h1>"
+                         "</body></html>");
+        return response;
     }
-
-    std::string content = fileReader.readFile(filePath);
-    std::string contentType = fileReader.getContentType(filePath);
-
-    return HttpResponse::createOkResponse(content, contentType);
 }
 
 void Server::handleClient(int clientFd)
@@ -193,7 +323,9 @@ bool Server::start()
         return false;
     }
 
-    std::cout << "Server listening on port " << port << std::endl;
+    std::cout << "Server '" << config.getServerName()
+              << "' listening on " << config.getHost()
+              << ":" << config.getPort() << std::endl;
     return true;
 }
 
